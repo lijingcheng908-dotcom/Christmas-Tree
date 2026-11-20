@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<meta name="theme-color" content="#08030e" />
+<title>Merry Christmas · ASCII 字符粒子圣诞树</title>
+<style>
+  :root { color-scheme: dark; --milk:#f6e9fa; --muted:#b7a7bf; --pink:#ff73b5; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; width:100%; min-height:100%; overflow:hidden; background:#08030e; }
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", "Microsoft YaHei", monospace; color:var(--milk); }
+  #scene { position:fixed; inset:0; display:block; width:100%; height:100%; touch-action:none; cursor:grab; }
+  #scene.grabbing { cursor:grabbing; }
+  .sky-vignette { position:fixed; inset:0; pointer-events:none; background:
+    radial-gradient(ellipse 63% 62% at 50% 61%, transparent 34%,rgba(8,2,14,.2) 80%,rgba(0,0,4,.65) 100%); }
+  .topband { position:fixed; top:0; left:0; right:0; height:80px; pointer-events:none;
+    background:linear-gradient(180deg,rgba(49,13,65,.84),rgba(44,11,48,.45) 67%,transparent); border-bottom:1px solid rgba(250,110,224,.06); }
+  header { position:fixed; top:23px; left:clamp(20px,5vw,70px); right:clamp(20px,5vw,70px);
+    display:flex; align-items:center; justify-content:space-between; gap:16px; z-index:2; }
+  .brand { font-weight:700; font-size:12px; letter-spacing:.24em; color:#f3d9f1; white-space:nowrap; }
+  .brand em { font-style:normal; color:#ff73b5; }
+  .right { display:flex; gap:9px; align-items:center; }
+  button { font:inherit; }
+  .chip { padding:9px 12px; border-radius:999px; border:1px solid rgba(248,196,239,.21);
+    background:rgba(26,11,32,.52); color:#f9d9f1; letter-spacing:.07em; font-size:11px;
+    cursor:pointer; backdrop-filter:blur(9px); transition:background .18s, border-color .18s, transform .18s; }
+  .chip:hover { background:rgba(75,23,65,.65); border-color:rgba(255,149,212,.45); transform:translateY(-1px); }
+  .instructions { position:fixed; top:clamp(103px,14.5vh,150px); left:0; width:100%; text-align:center;
+    pointer-events:none; z-index:1; }
+  .instructions .en { font-size:clamp(10px,1.05vw,12px); letter-spacing:.16em; color:#efe0f0; text-shadow:0 0 18px rgba(250,138,230,.25); }
+  .instructions .cn { margin-top:9px; font-size:11px; letter-spacing:.22em; color:rgba(235,199,234,.46); }
+  .bottom { position:fixed; left:0; right:0; bottom:max(24px,env(safe-area-inset-bottom)); text-align:center;
+    pointer-events:none; color:rgba(222,176,213,.36); font-size:10px; letter-spacing:.22em; }
+  .bottom b { color:#ed91c2; font-weight:400; }
+  body.message-mode .instructions, body.message-mode .bottom, body.message-mode header { opacity:0; pointer-events:none; }
+  .instructions, .bottom, header { transition:opacity .38s ease; }
+  @media(max-width:600px){
+    header { top:20px; left:17px; right:17px; }
+    .brand { font-size:11px; letter-spacing:.1em; }
+    .chip { font-size:10px; padding:8px 9px; }
+    .right { gap:6px; }
+    #pauseButton { display:none; }
+    #openButton { white-space:nowrap; padding:8px 10px; font-size:10px; }
+    .instructions { top:clamp(104px,15vh,133px); }
+    .instructions .en { letter-spacing:.1em; }
+    .instructions .cn { letter-spacing:.07em; }
+    .bottom { font-size:9px; letter-spacing:.09em; }
+  }
+  @media(prefers-reduced-motion:reduce){.chip,.instructions,.bottom,header{transition:none}}
+</style>
+</head>
+<body>
+<canvas id="scene" aria-label="由发光符号组成的动态圣诞树，点击后汇聚成 Merry Christmas"></canvas>
+<div class="sky-vignette" aria-hidden="true"></div>
+<div class="topband" aria-hidden="true"></div>
+<header>
+  <div class="brand">CHRISTMAS<em>.</em>EXE <span style="font-weight:400;opacity:.5">/ 2026</span></div>
+  <div class="right">
+    <button class="chip" id="pauseButton" type="button">❚❚ 暂停</button>
+    <button class="chip" id="openButton" type="button">✧ Merry Christmas</button>
+  </div>
+</header>
+<div class="instructions"><div class="en">TAP THE TREE TO MAKE A WISH</div><div class="cn">点击圣诞树 · 让符号汇聚成祝福 ✧</div></div>
+<div class="bottom">ASCII CHRISTMAS TREE · DRAG TO ROTATE</div>
+<script>
+'use strict';
+// ─────────────────────────────────────────────────────────────────────────
+// 1. 纯 Canvas 符号粒子圣诞树（不需要 Three.js，也不需要图片素材）
+// ─────────────────────────────────────────────────────────────────────────
+const canvas = document.querySelector('#scene');
+const ctx = canvas.getContext('2d', {alpha:false});
+const pauseButton = document.querySelector('#pauseButton');
+const chars = ['·', '•', ':', '+', '*', 'x', '×', '%', '@', '#', '=', 'o', '0', '※', '✧'];
+const colors = ['#ffffff','#fffaff','#fff0f7','#ffe2f0','#f6d5e8','#ff74af','#fa418b','#f05483'];
+const pointCloud = [], ornaments = [], baubles = [], stars = [], snow = [], gifts = [];
+const giftChars=['·','*','+','x','%','@','#','✧','o','◦','※'];
+// 交互状态：tree → morph → message → return → tree
+let mode='tree', morphElapsed=0, morphParticles=[], textTargets=[];
+const morphDuration=3.0, returnDuration=1.75;
+const textChars=['·','•',':','+','*','x','×','%','@','#','=','o','0','✧'];
+let W=innerWidth,H=innerHeight,DPR=1, treeTop=0, treeH=0,treeR=0,cx=0;
+let time=0,lastFrame=0,paused=false,dragging=false,moved=false,dragStart=0;
+let mouseX=0, manualTurn=0, velocity=.0;
+const rand=(a,b)=>a+Math.random()*(b-a);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+// 将字符布置成很多层“横向短句”，然后加入 Z 深度，让它们能立体旋转。
+function buildTree(){
+  pointCloud.length=0; ornaments.length=0; baubles.length=0; gifts.length=0;
+  const rows=82;
+  for(let row=0;row<rows;row++){
+    const u=(row+.5)/rows;
+    const r=Math.pow(u,1.04);
+    const count=Math.max(1,Math.round(2*r*treeR/7.2));
+    for(let j=0;j<count;j++){
+      if(Math.random()<.03) continue;
+      const x=count===1?0:((j/(count-1))*2-1)*r*treeR;
+      const maxZ=Math.sqrt(Math.max(0,(r*treeR)**2-x*x));
+      const z=rand(-1,1)*maxZ;
+      const sparkle=Math.random();
+      pointCloud.push({
+        x:x+rand(-2.1,2.1), z, u:u+rand(-.003,.003), row,
+        glyph:Math.floor(rand(0,chars.length)),
+        tint:sparkle<.76?Math.floor(rand(0,5)):(sparkle<.90?5:6+Math.floor(rand(0,2))),
+        alpha:rand(.77,1), size:rand(8.2,10.8), phase:rand(0,7),seed:rand(0,1000),
+      });
+    }
+  }
+  // 更丰富的符号花环：三条螺旋带叠加。
+  for(let band=0;band<3;band++){
+    const shift = band*2.05 + .55;
+    for(let i=0;i<180;i++){
+      const u=.12+.86*i/179;
+      const a=u*Math.PI*(6.4+band*.55)+shift;
+      const r=Math.pow(u,1.06)*treeR*(.9+.08*Math.sin(i*.13+band));
+      ornaments.push({u:u+rand(-.008,.008),x:r*Math.cos(a),z:r*Math.sin(a),
+        glyph:chars[Math.floor(rand(5,13))],phase:rand(0,7),size:rand(8.2,12.8),seed:rand(0,1000),band});
+    }
+  }
+  // 更多闪亮装饰球。
+  for(let i=0;i<34;i++){
+    const u=rand(.18,.95);
+    const r=Math.pow(u,1.06)*treeR*rand(.2,.95);
+    const a=rand(0,Math.PI*2);
+    baubles.push({u,x:r*Math.cos(a),z:r*Math.sin(a),radius:rand(4.3,8.5),phase:rand(0,7),color:i%4});
+  }
+  // 礼物盒摆在树脚的下方，而非覆盖树形；六个盒子分成左右两组堆叠。
+  const base = treeTop + treeH;
+  const mini = Math.min(1,Math.max(.66,treeR/165));
+  const w = 42*mini, h = 28*mini;
+  const palette = [
+    {body:'#ff75bb', ribbon:'#ffecb0'},
+    {body:'#6ccfff', ribbon:'#fff7f9'},
+    {body:'#b493ff', ribbon:'#fff0ba'},
+    {body:'#f8a167', ribbon:'#fff7e3'},
+    {body:'#8fe7bc', ribbon:'#ffdaef'},
+    {body:'#ff6a9b', ribbon:'#ffe0ae'}
+  ];
+  const sep = Math.max(w+6, treeR*.36);
+  const group = Math.max(w*.68, treeR*.60);
+  const pack = [
+    [-group-sep*.42,base+60*mini,0],[-group+sep*.42,base+60*mini,1],[-group,base+21*mini,2],
+    [ group-sep*.42,base+60*mini,3],[ group+sep*.42,base+60*mini,4],[ group,base+21*mini,5]
+  ];
+  for(const [dx,dy,c] of pack){
+    const isUpper=(c===2||c===5);
+    const ww=isUpper?w*.95:w;
+    const hh=isUpper?h*.94:h;
+    const g={x:cx+dx,top:dy,w:ww,h:hh,body:palette[c].body,ribbon:palette[c].ribbon,seed:rand(0,100)};
+    g.particles=[];
+    for(let yy=0;yy<=hh;yy+=6.3*mini){
+      const nr=Math.floor(yy/(6.3*mini));
+      for(let xx=0;xx<=ww;xx+=5.7*mini){
+        const nc=Math.floor(xx/(5.7*mini));
+        const ribbon=Math.abs(xx-ww*.5)<3.9*mini || Math.abs(yy-hh*.55)<3.4*mini;
+        const edge=xx<5*mini||xx>ww-5*mini||yy<5*mini||yy>hh-5*mini;
+        g.particles.push({x:xx-ww*.5,y:yy-hh*.5,row:nr,col:nc,
+          ribbon,edge,glyph:Math.floor(rand(0,giftChars.length)),phase:rand(0,7),alpha:rand(.75,1)});
+      }
+    }
+    gifts.push(g);
+  }
+}
+function buildEnvironment(){
+  stars.length=0; snow.length=0;
+  const count=Math.round(clamp(W*H/5800,90,280));
+  for(let i=0;i<count;i++)stars.push({x:Math.random()*W,y:Math.random()*H*.85,phase:rand(0,7),
+    size:rand(.4,1.6),cross:Math.random()<.12,alpha:rand(.12,.65)});
+  for(let i=0;i<65;i++)snow.push({x:Math.random()*W,y:Math.random()*H,size:rand(.45,1.25),
+    speed:rand(2,13),phase:rand(0,7),alpha:rand(.08,.29)});
+}
+function resize(){
+  if(mode!=='tree')mode='tree';
+  document.body.classList.remove('message-mode');
+  W=innerWidth; H=innerHeight; DPR=Math.min(devicePixelRatio||1,1.8);
+  canvas.width=Math.round(W*DPR); canvas.height=Math.round(H*DPR);
+  canvas.style.width=W+'px';canvas.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  cx=W*.5;
+  treeTop=Math.max(96,Math.min(205,H*.29));
+  const reserve=H<620?108:142;
+  treeH=Math.max(165,Math.min(H*.62,650,H-treeTop-reserve));
+  treeR=Math.min(W*.408,treeH*.415,265);
+  buildTree();buildEnvironment();
+}
+function backdrop(t){
+  const bg=ctx.createRadialGradient(cx,H*.53,0,cx,H*.58,Math.max(W,H)*.77);
+  bg.addColorStop(0,'#0e0719');bg.addColorStop(.42,'#080411');bg.addColorStop(1,'#030409');
+  ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
+  const violet=ctx.createLinearGradient(0,0,0,110);
+  violet.addColorStop(0,'rgba(71,23,70,.44)');violet.addColorStop(1,'rgba(45,12,57,0)');
+  ctx.fillStyle=violet;ctx.fillRect(0,0,W,120);
+  for(const s of stars){
+    const v=.74+.26*Math.sin(t*1.7+s.phase);
+    ctx.fillStyle=`rgba(235,205,247,${(s.alpha*v).toFixed(3)})`;
+    ctx.beginPath();ctx.arc(s.x,s.y,s.size*.5,0,Math.PI*2);ctx.fill();
+    if(s.cross){ctx.strokeStyle=`rgba(243,192,241,${(s.alpha*v*.65).toFixed(3)})`;
+      ctx.lineWidth=.65;ctx.beginPath();ctx.moveTo(s.x-2.3,s.y);ctx.lineTo(s.x+2.3,s.y);
+      ctx.moveTo(s.x,s.y-2.3);ctx.lineTo(s.x,s.y+2.3);ctx.stroke();}
+  }
+  for(const s of snow){
+    const y=(s.y+t*s.speed)%(H+12)-6;
+    ctx.fillStyle=`rgba(245,219,252,${s.alpha.toFixed(3)})`;
+    ctx.beginPath();ctx.arc(s.x+Math.sin(t*.55+s.phase)*8,y,s.size*.48,0,Math.PI*2);ctx.fill();
+  }
+}
+function ground(t){
+  // 由整齐点阵构成的透视地面，复刻视频底部的星点网格。
+  const horizon=treeTop+treeH-12;
+  const floorHeight=Math.min(H-horizon-10,152);
+  if(floorHeight<8) return;
+  for(let row=0;row<24;row++){
+    const depth=row/23;
+    const y=horizon+Math.pow(depth,1.9)*floorHeight;
+    const spacing=5+depth*9;
+    const shift=(row%2)*spacing*.5 + Math.sin(t*.25)*2;
+    for(let x=shift-spacing;x<W+spacing;x+=spacing){
+      const nx=Math.abs(x-cx)/Math.max(W*.52,180);
+      const fade=Math.max(0,1-nx*nx);
+      const luminance=(.08+.26*(1-depth))*(.38+.62*fade);
+      ctx.fillStyle=`rgba(222,188,241,${luminance.toFixed(3)})`;
+      ctx.fillRect(x,y,depth>.57?1.25:1.0,depth>.57?1.25:1.0);
+    }
+  }
+}
+function glyphAt(idx,step,seed){return chars[(idx+step+chars.length*64+Math.floor(seed)%3)%chars.length]}
+function drawTree(t){
+  const angle=t*.23+manualTurn;
+  const cos=Math.cos(angle),sin=Math.sin(angle);
+  const bob=Math.sin(t*.8)*2.1;
+  // 每层还有一行细小的 ··· 点阵，类似原视频密集滚动的 ASCII 文本行。
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.font='700 9.6px ui-monospace,Consolas,monospace';
+  for(let row=0;row<82;row++){
+    const u=(row+.5)/82;
+    const n=Math.max(1,Math.round(2*Math.pow(u,1.04)*treeR/5.9));
+    const shimmer=.19+.13*(.5+.5*Math.sin(row*.35-t*2.5));
+    ctx.globalAlpha=shimmer;
+    ctx.fillStyle=row%5===0?'#fef3fd':'#deb8df';
+    ctx.fillText('·'.repeat(n),cx+Math.sin(t*.6+row*.13)*2,treeTop+u*treeH+bob);
+  }
+  ctx.globalAlpha=1;
+  const projected=[];
+  const flowStep=Math.floor(t*3.2);
+  for(const p of pointCloud){
+    // 旋转 3D 坐标：绕树的 Y 轴旋转，按远近略微改变亮度/大小。
+    const rx=p.x*cos+p.z*sin;
+    const rz=p.z*cos-p.x*sin;
+    const scale=1+rz/1200;
+    const x=cx+rx*scale;
+    const y=treeTop+p.u*treeH+bob+Math.sin(t*1.8+p.phase+p.row*.1)*.55;
+    const rowWave=Math.sin(p.row*.5-t*3.15+p.phase*.28); // 一波一波“滚动”的亮度
+    const flicker=.89+.11*Math.sin(t*2.5+p.phase);
+    const depth=clamp(.92+rz/Math.max(90,treeR)*.12,.70,1.08);
+    const alpha=clamp((p.alpha+.18*Math.max(0,rowWave))*flicker*depth,.16,1);
+    const glyph=glyphAt(p.glyph,flowStep+Math.floor(p.row*.16),p.seed);
+    projected.push({x,y,z:rz,size:p.size*(.88+.12*scale),alpha,tint:p.tint,glyph,shine:rowWave>.89&&p.tint>=5});
+  }
+  projected.sort((a,b)=>a.z-b.z);
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  let prevSize=0;
+  for(const p of projected){
+    const sz=Math.round(p.size*10)/10;
+    if(sz!==prevSize){ctx.font=`600 ${sz}px ui-monospace,Consolas,'Courier New',monospace`;prevSize=sz;}
+    ctx.globalAlpha=p.alpha;
+    ctx.fillStyle=colors[p.tint];
+    ctx.fillText(p.glyph,p.x,p.y);
+    if(p.shine){ctx.globalAlpha=p.alpha*.2; ctx.fillText(p.glyph,p.x+.8,p.y);}
+  }
+  ctx.globalAlpha=1;
+  // 彩色花环会沿着树表面缓缓流动。
+  for(const p of ornaments){
+    const rx=p.x*cos+p.z*sin,rz=p.z*cos-p.x*sin;
+    if(Math.sin(t*2.1+p.phase+p.u*22+p.band*.8)<-.22)continue;
+    const opacity=clamp(.24+.64*(rz/treeR*.5+.5),.18,.96);
+    ctx.globalAlpha=opacity;
+    ctx.fillStyle= Math.sin(p.phase+t+p.band)<-.35?'#ffd8ef':Math.sin(p.phase+t)>.55?'#ff3f82':(p.band===2?'#ffa24c':'#ff6da6');
+    ctx.font=`700 ${p.size.toFixed(1)}px ui-monospace,Consolas,'Courier New',monospace`;
+    ctx.fillText(p.glyph,cx+rx,treeTop+p.u*treeH+bob);
+  }
+  // 发光装饰球
+  for(const b of baubles){
+    const rx=b.x*cos+b.z*sin,rz=b.z*cos-b.x*sin;
+    const x=cx+rx, y=treeTop+b.u*treeH+bob;
+    const alpha=clamp(.32+.62*(rz/treeR*.5+.5),.18,.95);
+    const palette=['#ff5e98','#72d7ff','#ffe07b','#85f4a3'];
+    ctx.globalAlpha=alpha;
+    const grad=ctx.createRadialGradient(x-1.5,y-1.5,0,x,y,b.radius*2.15);
+    grad.addColorStop(0,'rgba(255,255,255,.92)');
+    grad.addColorStop(.25,palette[b.color]);
+    grad.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.fillStyle=grad; ctx.beginPath(); ctx.arc(x,y,b.radius,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,.28)'; ctx.lineWidth=1; ctx.beginPath(); ctx.arc(x,y,b.radius*.9,0,Math.PI*2); ctx.stroke();
+  }
+  ctx.globalAlpha=1;
+  // 更大的树顶星形标志。
+  const topperY=treeTop-28+bob;
+  const topper=['   ✦   ','  ✦✦✦  ',' ✦※※✦ ','✦※✧※✦',' ✦※※✦ ','  ✦✦✦  ','   ✦   '];
+  for(let row=0;row<topper.length;row++){
+    const text=topper[row];
+    ctx.globalAlpha=.76+.22*Math.sin(t*2+row*.6)**2;
+    ctx.fillStyle=row<2?'#fff9d1':(row===3?'#ffe896':'#ffe7f4');
+    ctx.font=`700 ${row===3?16:14}px ui-monospace,Consolas,monospace`;
+    ctx.fillText(text,cx,topperY+row*10.5);
+  }
+  ctx.globalAlpha=1;
+  // 小星芒，不是位图。
+  const glow=.38+.33*(.5+.5*Math.sin(t*3));
+  const rad=ctx.createRadialGradient(cx,topperY+12,0,cx,topperY+12,44);
+  rad.addColorStop(0,`rgba(255,232,175,${glow*.9})`);rad.addColorStop(.5,`rgba(255,165,214,${glow*.4})`);rad.addColorStop(1,'rgba(255,100,200,0)');
+  ctx.fillStyle=rad;ctx.fillRect(cx-52,topperY-36,104,104);
+}
+function drawGifts(t,opacity=1){
+  if(opacity<=0)return;
+  ctx.save();
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  const scale=Math.min(1,Math.max(.66,treeR/165));
+  const size=9.3*scale;
+  ctx.font=`700 ${size}px ui-monospace,Consolas,'Courier New',monospace`;
+  for(const g of gifts){
+    for(const p of g.particles){
+      const wave=Math.sin(p.row*.54-t*3.15+p.phase*.2);
+      const shift=Math.floor(t*3.6+p.row*.24);
+      const chr=giftChars[(p.glyph+shift)%giftChars.length];
+      const glint=.7+.3*(.5+.5*Math.sin(t*3+p.phase));
+      ctx.globalAlpha=opacity*clamp(p.alpha*glint+.16*Math.max(0,wave),.1,1);
+      ctx.fillStyle=p.ribbon?g.ribbon:(p.edge?'#ffffff':g.body);
+      ctx.fillText(chr,g.x+p.x,g.top+g.h*.5+p.y);
+    }
+    // 由符号构成蝴蝶结和盖子，保留字符流动的感觉。
+    ctx.fillStyle=g.ribbon;
+    ctx.globalAlpha=opacity*(.7+.28*Math.sin(t*2.7+g.seed)**2);
+    ctx.font=`700 ${13*scale}px ui-monospace,Consolas,monospace`;
+    ctx.fillText('✧',g.x,g.top-9*scale);
+    ctx.font=`700 ${10*scale}px ui-monospace,Consolas,monospace`;
+    ctx.fillText('×',g.x-11*scale,g.top-3*scale);
+    ctx.fillText('×',g.x+11*scale,g.top-3*scale);
+    ctx.font=`700 ${size}px ui-monospace,Consolas,monospace`;
+  }
+  // 树脚下方、左右字符礼物盒之间的小水印。
+  const innerLeft=Math.max(...gifts.filter(g=>g.x<cx).map(g=>g.x+g.w/2));
+  const innerRight=Math.min(...gifts.filter(g=>g.x>cx).map(g=>g.x-g.w/2));
+  const label='From Adrian Tso';
+  ctx.font='10px Georgia,serif';
+  const available=Math.max(40,innerRight-innerLeft-10);
+  const fontSize=Math.min(10,10*available/ctx.measureText(label).width);
+  ctx.font=`${fontSize}px Georgia,serif`;
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.globalAlpha=opacity*.62;
+  ctx.fillStyle='#e3b6d5';
+  ctx.fillText(label,cx,treeTop+treeH+73*scale);
+  ctx.restore();
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 3. 文字字符粒子：用离屏 Canvas 生成 Merry / Christmas 字形掩膜，
+//    每个亮像素采样为一个动态的 ASCII 符号，而非静态文字图片。
+// ─────────────────────────────────────────────────────────────────────────
+function buildTextTargets(){
+  const off=document.createElement('canvas');
+  off.width=1100;off.height=400;
+  const ink=off.getContext('2d',{willReadFrequently:true});
+  const fit=(words,base,maxW,italic)=>{
+    let size=base;
+    while(size>40){
+      ink.font=`900 ${italic?'italic ':''}${size}px Georgia,'Times New Roman',serif`;
+      if(ink.measureText(words).width<=maxW)break;
+      size-=2;
+    }
+    return size;
+  };
+  ink.textAlign='center';ink.textBaseline='middle';ink.fillStyle='#fff';ink.strokeStyle='#fff';ink.lineWidth=3.5;ink.lineJoin='round';
+  const first=fit('Merry',166,880,true);
+  ink.font=`900 italic ${first}px Georgia,'Times New Roman',serif`;
+  ink.strokeText('Merry',550,122);ink.fillText('Merry',550,122);
+  const second=fit('Christmas',144,1010,false);
+  ink.font=`900 ${second}px Georgia,'Times New Roman',serif`;
+  ink.strokeText('Christmas',550,308);ink.fillText('Christmas',550,308);
+  const pixels=ink.getImageData(0,0,off.width,off.height).data;
+  const scale=Math.min(W*.945/1010,H*.47/390,1.22);
+  const step=Math.max(3.8,Math.min(8.4,2.85/scale));
+  const x0=cx, y0=H*.52;
+  textTargets=[];
+  // 不完全整齐的网格可以保持字符粒子的手工感。
+  let row=0;
+  for(let yy=9;yy<396;yy+=step){
+    const offset=(row%2)*step*.47;
+    for(let xx=4+offset;xx<1094;xx+=step){
+      const idx=(Math.floor(yy)*off.width+Math.floor(xx))*4+3;
+      if(pixels[idx]<132)continue;
+      const tx=x0+(xx-550)*scale;
+      const ty=y0+(yy-215)*scale;
+      textTargets.push({x:tx,y:ty,row,band:yy<207?0:1,u:xx/1100});
+    }
+    row++;
+  }
+}
+function makeSources(){
+  const angle=time*.23+manualTurn;
+  const cs=Math.cos(angle),sn=Math.sin(angle);
+  const bob=Math.sin(time*.8)*2.1;
+  const sources=[];
+  for(const p of pointCloud){
+    const rx=p.x*cs+p.z*sn,rz=p.z*cs-p.x*sn;
+    sources.push({x:cx+rx*(1+rz/1200),y:treeTop+p.u*treeH+bob,
+      glyph:chars[p.glyph],color:colors[p.tint],seed:p.seed});
+  }
+  for(const p of ornaments){
+    const rx=p.x*cs+p.z*sn;
+    sources.push({x:cx+rx,y:treeTop+p.u*treeH+bob,glyph:p.glyph,
+      color:p.band===2?'#ffbd86':'#ff79ba',seed:p.seed});
+  }
+  // 将星尖端与彩色装饰球也视作参与变形的字符。
+  for(const b of baubles){
+    const rx=b.x*cs+b.z*sn;
+    sources.push({x:cx+rx,y:treeTop+b.u*treeH+bob,glyph:'✧',
+      color:['#ffcfec','#7fd8ff','#ffe1ab','#a3ffd7'][b.color],seed:b.phase});
+  }
+  for(let i=0;i<32;i++){
+    const a=i/32*Math.PI*2;
+    sources.push({x:cx+Math.cos(a)*14,y:treeTop-4+Math.sin(a)*16,
+      glyph:'✦',color:'#fff0bb',seed:Math.PI*i});
+  }
+  return sources;
+}
+function shuffle(arr){
+  let seed=430991;
+  function r(){seed=(1664525*seed+1013904223)>>>0;return seed/4294967296;}
+  for(let i=arr.length-1;i>0;i--){const j=Math.floor(r()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]];}
+  return {arr,r};
+}
+function beginMorph(){
+  if(mode!=='tree')return;
+  paused=false;pauseButton.textContent='❚❚ 暂停';
+  buildTextTargets();
+  const sources=makeSources();
+  const {arr:destinations,r}=shuffle([...textTargets]);
+  morphParticles=[];
+  // 每个字形点对应一个从树上飞过来的字符；多出来的字符在途中消散。
+  const total=Math.max(sources.length,destinations.length);
+  for(let i=0;i<total;i++){
+    const s=sources[i%sources.length];
+    const hasTarget=i<destinations.length;
+    const d=hasTarget?destinations[i]:null;
+    morphParticles.push({
+      sx:s.x, sy:s.y,
+      tx:d?d.x:cx+(r()-.5)*W*.62, ty:d?d.y:H*.51+(r()-.5)*H*.43,
+      hasTarget, row:d?d.row:0, band:d?d.band:0,
+      glyph:s.glyph, base:Math.floor(r()*textChars.length), seed:s.seed,
+      twx:(r()-.5)*110, twy:(r()-.5)*98, delay:r()*.19,
+      color:s.color, tint:r()
+    });
+  }
+  mode='morph';morphElapsed=0;
+  document.body.classList.add('message-mode');
+}
+function beginReturn(){
+  if(mode!=='message')return;
+  mode='return';morphElapsed=0;
+}
+function drawMessageParticles(t,pct=1){
+  const fontSize=Math.max(4.4,Math.min(7.4,W/145));
+  ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.font=`700 ${fontSize}px ui-monospace,Consolas,'Courier New',monospace`;
+  const flowing=Math.floor(t*4.2);
+  for(const p of morphParticles){
+    const s=clamp((pct-p.delay)/(1-p.delay),0,1);
+    const e=s*s*(3-2*s);
+    const arc=Math.sin(Math.PI*e);
+    const xx=p.sx+(p.tx-p.sx)*e + p.twx*arc;
+    const yy=p.sy+(p.ty-p.sy)*e + p.twy*arc;
+    // 这里不移动成形文字的轮廓，只改变字符、颜色、行波和少量细微位移。
+    const wave=Math.sin(yy*.080-t*4.35+p.seed*.09);
+    const bandWave=Math.sin(p.row*.54-t*3.7+p.seed*.1);
+    const flash=.85+.15*(.5+.5*Math.sin(t*3+p.seed));
+    const drift=e>.97?Math.sin(t*1.7+p.seed)*.19:0;
+    const glyph=textChars[(p.base+flowing+Math.floor(p.row*.26)+textChars.length*9)%textChars.length];
+    const opacity=p.hasTarget?1-clamp(1-e,0,1)*.09:Math.max(0,1-e*1.55);
+    ctx.globalAlpha=opacity*clamp(flash+.15*Math.max(0,wave)+.13*Math.max(0,bandWave),0,1);
+    ctx.fillStyle=e<.50?p.color:
+      (wave>.72?'#fff7df':p.band===0?(p.tint>.84?'#ffd6aa':'#ffe7f4'):
+       (p.tint>.84?'#ff7db5':'#fff5fb'));
+    ctx.fillText(e>.65?glyph:p.glyph,xx+drift,yy);
+  }
+  ctx.restore();
+}
+function drawMessageGlow(t){
+  const width=Math.min(W*.83,810);
+  const height=Math.min(H*.35,340);
+  const grd=ctx.createRadialGradient(cx,H*.52,0,cx,H*.52,width*.64);
+  grd.addColorStop(0,'rgba(174,56,141,.10)');
+  grd.addColorStop(1,'rgba(64,26,84,0)');
+  ctx.fillStyle=grd;ctx.fillRect(cx-width*.6,H*.52-height,width*1.2,height*2);
+}
+function drawMorph(t){
+  const q=clamp(morphElapsed/morphDuration,0,1);
+  const progress=clamp((q-.025)/.95,0,1);
+  drawMessageGlow(t);
+  drawMessageParticles(t,progress);
+}
+function drawCompletedMessage(t){
+  drawMessageGlow(t);
+  drawMessageParticles(t,1);
+  // 稀疏的小星光飘过字幕，避免任何背景静态文本。
+  const w=Math.min(W*.80,800), h=Math.min(H*.28,255);
+  for(let i=0;i<12;i++){
+    const v=(t*.065+i*.127)%1;
+    const x=cx+(v-.5)*w;
+    const y=H*.52+Math.sin(i*8.17+t*.9)*h*.42;
+    const a=.06+.20*Math.pow(Math.max(0,Math.sin(t*2.3+i*3)),2);
+    ctx.globalAlpha=a;ctx.fillStyle='#fce7fd';ctx.font='12px Georgia,serif';
+    ctx.fillText('✧',x,y);
+  }
+  ctx.globalAlpha=1;
+}
+function frame(now){
+  requestAnimationFrame(frame);
+  if(!lastFrame)lastFrame=now;
+  const dt=Math.min((now-lastFrame)/1000,.08);
+  if(now-lastFrame<25)return;
+  lastFrame=now;
+  if(!paused||mode!=='tree'){
+    time+=dt;manualTurn+=velocity;velocity*=.91;
+  }
+  backdrop(time);
+  if(mode==='tree'){
+    ground(time);drawTree(time);drawGifts(time);
+  }else if(mode==='morph'){
+    morphElapsed+=dt;
+    ctx.save();ctx.globalAlpha=1-clamp(morphElapsed/1.6,0,.78);ground(time);ctx.restore();
+    drawGifts(time,1-clamp(morphElapsed/1.25,0,1));
+    drawMorph(time);
+    if(morphElapsed>=morphDuration){mode='message';morphElapsed=0;}
+  }else if(mode==='message'){
+    drawCompletedMessage(time);
+  }else if(mode==='return'){
+    morphElapsed+=dt;
+    const progress=1-clamp(morphElapsed/returnDuration,0,1);
+    drawGifts(time,1-progress);
+    drawMessageGlow(time);
+    drawMessageParticles(time,progress);
+    if(morphElapsed>=returnDuration){
+      mode='tree';morphElapsed=0;document.body.classList.remove('message-mode');
+    }
+  }
+}
+function withinTree(x,y){
+  const u=(y-treeTop)/treeH;
+  if(u<-.07||u>1.06)return false;
+  return Math.abs(x-cx)<treeR*clamp(u,0,1)+32;
+}
+canvas.addEventListener('pointerdown',e=>{
+  if(mode==='morph'||mode==='return')return;
+  dragging=true;moved=false;dragStart=e.clientX;mouseX=e.clientX;
+  canvas.setPointerCapture(e.pointerId);canvas.classList.add('grabbing');
+});
+canvas.addEventListener('pointermove',e=>{
+  if(mode==='morph'||mode==='return')return;
+  if(dragging&&mode==='tree'){
+    const dx=e.clientX-mouseX;mouseX=e.clientX;
+    if(Math.abs(e.clientX-dragStart)>8)moved=true;
+    manualTurn+=dx*.009;velocity=dx*.00022;
+  }else canvas.style.cursor=(mode==='message'||withinTree(e.clientX,e.clientY))?'pointer':'grab';
+});
+canvas.addEventListener('pointerup',e=>{
+  if(!dragging)return;
+  canvas.classList.remove('grabbing');dragging=false;
+  if(moved)return;
+  if(mode==='message')beginReturn();
+  else if(mode==='tree'&&withinTree(e.clientX,e.clientY))beginMorph();
+});
+canvas.addEventListener('pointercancel',()=>{dragging=false;canvas.classList.remove('grabbing');});
+pauseButton.addEventListener('click',()=>{
+  if(mode!=='tree')return;
+  paused=!paused;pauseButton.textContent=paused?'▶ 继续':'❚❚ 暂停';
+});
+document.querySelector('#openButton').addEventListener('click',()=>{
+  if(mode==='tree')beginMorph();else if(mode==='message')beginReturn();
+});
+document.addEventListener('keydown',e=>{
+  if((e.key==='Enter'||e.key===' ')&&mode==='tree'){e.preventDefault();beginMorph();}
+  else if((e.key==='Enter'||e.key===' '||e.key==='Escape')&&mode==='message'){
+    e.preventDefault();beginReturn();
+  }
+});
+window.addEventListener('resize',resize);
+resize();requestAnimationFrame(frame);
+</script>
+</body>
+</html>
